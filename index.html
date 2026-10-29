@@ -644,7 +644,7 @@ function vPlan(){
     <div><label for="fr">Responsable</label><select id="fr"><option value="">Todos</option><option value="__none__"${f.resp==='__none__'?' selected':''}>Sin responsable</option>${opt(respList().map(r=>[r,r]),f.resp)}</select></div>
     <div><label for="fo">Ordenar por</label><select id="fo">${opt([['prio','Prioridad'],['fecha','Fecha prevista'],['estado','Estado'],['id','Identificador']],f.orden)}</select></div>
   </div>
-  <div class="toolbar"><span class="muted small" id="pcount"></span><span style="margin-left:auto"></span><button class="btn sm ghost" data-act="clearF">Quitar filtros</button><button class="btn sm primary" data-act="newMed">Nueva medida</button></div>
+  <div class="toolbar"><span class="muted small" id="pcount"></span><span style="margin-left:auto"></span><button class="btn sm ghost" data-act="clearF">Quitar filtros</button><button class="btn sm" data-act="xlsxExpF">Exportar Excel</button><button class="btn sm primary" data-act="newMed">Nueva medida</button></div>
   <div id="ptable"></div></div>`;
 }
 function drawPlan(){
@@ -716,6 +716,10 @@ function vDatos(){
      <p class="note" style="margin-top:0">Los datos están en la nube y se comparten entre usuarios. Exporta una copia con regularidad como respaldo. Importar solo añade datos; no borra los existentes.</p>
      <p style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn primary" data-act="expJson">Exportar copia (.json)</button><button class="btn" data-act="impJson">Importar copia…</button><button class="btn" data-act="expCsv">Exportar medidas (.csv para Excel)</button></p>
      <input type="file" id="impFile" accept=".json,application/json" hidden></div>
+   <div class="card"><h2>Medidas en Excel</h2>
+     <p class="note" style="margin-top:0">Descarga la plantilla, rellénala (una fila por medida) e impórtala. Antes de guardar nada verás qué filas están bien y cuáles tienen problemas. Solo se añaden medidas nuevas; las existentes no se modifican ni se duplican.</p>
+     <p style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn" data-act="xlsxTpl">Descargar plantilla (.xlsx)</button><button class="btn primary" data-act="xlsxImp">Importar medidas desde Excel…</button><button class="btn" data-act="xlsxExp">Exportar todas las medidas (.xlsx)</button></p>
+     <input type="file" id="impXlsx" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden></div>
    </div><div>
    <div class="card"><h2>Sesión</h2><p class="small muted" style="margin:0">Has entrado como <b>${esc(user?user.email:'')}</b>. Las anotaciones de seguimiento y los cambios de estado quedan registrados con tu usuario.</p></div>
    <div class="card"><h2>Marco de referencia</h2><p class="small muted" style="margin:0">${esc(REFS)}</p></div></div></div>`;
@@ -773,7 +777,8 @@ function render(){
   if(ready&&S.view==='plan'){drawPlan();bindPlan();}
   if(ready&&S.view==='crono'){const g=$('#cg');if(g)g.addEventListener('change',()=>{S.cg=g.value;render();});}
   if(ready&&S.view==='datos'){['empresa','centro','codigo','elaborado'].forEach(k=>$('#a_'+k).addEventListener('change',e=>{saveAjuste(k,e.target.value.trim());$('#brandSub').textContent=db.ajustes.empresa||'Planificación y seguimiento';}));
-    $('#impFile').addEventListener('change',e=>{if(e.target.files[0])impJson(e.target.files[0]);e.target.value='';});}
+    $('#impFile').addEventListener('change',e=>{if(e.target.files[0])impJson(e.target.files[0]);e.target.value='';});
+    $('#impXlsx').addEventListener('change',e=>{if(e.target.files[0])xlsxImportFile(e.target.files[0]);e.target.value='';});}
   document.title='Planificación preventiva · '+((VIEWS.find(v=>v[0]===S.view)||[])[1]);
 }
 function bindPlan(){
@@ -800,6 +805,10 @@ document.addEventListener('click',e=>{
     case 'print':try{window.print();}catch(x){toast('No se pudo abrir la impresión en este entorno');}return;
     case 'expJson':return expJson();
     case 'expCsv':return expCsv();
+    case 'xlsxTpl':if(!xReady())return;download('plantilla-importar-medidas.xlsx',xlsxBuild([],false),XLSX_MIME);return toast('Plantilla descargada');
+    case 'xlsxExp':if(!xReady())return;download('medidas-preventivas-'+today()+'.xlsx',xlsxBuild(sortMed(db.medidas,'prio'),true),XLSX_MIME);return toast('Excel exportado');
+    case 'xlsxExpF':{if(!xReady())return;const L=filteredMed();download('medidas-preventivas-filtro-'+today()+'.xlsx',xlsxBuild(L,true),XLSX_MIME);return toast(L.length+(L.length===1?' medida exportada':' medidas exportadas'));}
+    case 'xlsxImp':if(!xReady())return;return $('#impXlsx').click();
     case 'impJson':return $('#impFile').click();
   }
 });
@@ -809,6 +818,278 @@ function applyTheme(t){document.documentElement.setAttribute('data-theme',t);}
 (function(){let t=null;try{t=localStorage.getItem(THEME_KEY);}catch(e){}
   if(!t)t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';applyTheme(t);})();
 $('#themeBtn').addEventListener('click',()=>{const t=document.documentElement.getAttribute('data-theme')==='dark'?'light':'dark';applyTheme(t);try{localStorage.setItem(THEME_KEY,t);}catch(e){}});
+
+/* ============ Excel (.xlsx): exportar, plantilla e importar ============ */
+const XLSX_MIME='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const norm=s=>String(s==null?'':s).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');
+const XC=[
+ {k:'evaluacion',l:'Evaluación',req:1,w:38,al:['evaluaciondeorigen']},
+ {k:'riesgo',l:'Peligro o riesgo',req:1,w:34,al:['riesgo','peligro']},
+ {k:'medida',l:'Medida preventiva',req:1,w:52,al:['medida']},
+ {k:'tipo',l:'Tipo de medida',w:32,list:'tipo'},
+ {k:'nivel',l:'Nivel de riesgo',w:24,list:'nivel'},
+ {k:'prioridad',l:'Prioridad',req:1,w:12,list:'prio'},
+ {k:'expuestos',l:'Trabajadores expuestos',w:14,num:1,al:['expuestos']},
+ {k:'responsable',l:'Responsable',w:24},
+ {k:'recursos',l:'Medios humanos y materiales',w:30,al:['medios','recursos']},
+ {k:'coste',l:'Recursos económicos (€)',w:15,num:1,al:['coste','recursoseconomicos']},
+ {k:'inicio',l:'Fecha de comienzo',w:14,date:1,al:['fechainicio','comienzo']},
+ {k:'fin',l:'Fecha prevista de finalización',w:17,date:1,al:['fechafin','finprevisto','fechaprevista']},
+ {k:'estado',l:'Estado',w:22,list:'estado'},
+ {k:'ejecucion',l:'Fecha de implantación',w:15,date:1,al:['implantacion']},
+ {k:'evidencia',l:'Evidencia de implantación',w:32,al:['evidencia']},
+ {k:'verifFecha',l:'Fecha de verificación',w:15,date:1,al:['verificacion']},
+ {k:'verifNota',l:'Comprobación de la eficacia',w:32,al:['eficacia']},
+ {k:'motivo',l:'Motivo (si aplazada o cancelada)',w:32,al:['motivo']}
+];
+const XL={tipo:{col:'A',v:TIPOS_MED},nivel:{col:'B',v:NIVELES},prio:{col:'C',v:Object.keys(PRIO).map(k=>[k,PRIO[k].l])},estado:{col:'D',v:ESTADOS}};
+const XLH={tipo:'Tipo de medida',nivel:'Nivel de riesgo',prio:'Prioridad',estado:'Estado'};
+const XINSTR=[
+ ['t','Cómo usar esta plantilla'],
+ ['','Una fila = una medida preventiva. Rellena la hoja «Medidas» a partir de la fila 2 y guarda el archivo como .xlsx.'],
+ ['','Las columnas con la cabecera en amarillo son obligatorias: Evaluación, Peligro o riesgo, Medida preventiva y Prioridad.'],
+ ['','Evaluación: elige una de la lista. Debe existir ya en la aplicación; la hoja «Evaluaciones» muestra las que hay ahora mismo. La importación no crea evaluaciones.'],
+ ['','Tipo de medida, Nivel de riesgo, Prioridad y Estado: elige un valor de la lista desplegable. Si dejas el Estado vacío, se importa como Pendiente.'],
+ ['','Fechas: formato dd/mm/aaaa. Números: usa coma o punto para los decimales. Trabajadores expuestos y Recursos económicos deben ser números iguales o mayores que 0.'],
+ ['','Se aplican las mismas reglas que en el formulario: una medida Implantada necesita fecha de implantación; una Verificada necesita además fecha de verificación y evidencia; una Aplazada o Cancelada necesita motivo.'],
+ ['','Las filas con errores no se importan: antes de guardar nada, la aplicación muestra la lista de problemas con el número de fila.'],
+ ['','Las medidas que ya existen (misma evaluación, mismo riesgo y misma medida) se detectan y no se duplican. Por eso, volver a subir un archivo exportado no crea duplicados.'],
+ ['','Las columnas ID y Seguimiento, si aparecen en un archivo exportado, se ignoran al importar. La importación solo añade medidas nuevas; no modifica las existentes.'],
+ ['','No escribas nombres de trabajadores ni datos de salud en ningún campo.'],
+ ['','Las prioridades, los niveles de riesgo y los estados son criterios internos de gestión. Revisa los datos importados antes de darlos por buenos.']
+];
+const colL=i=>{let s='';i++;while(i>0){const m=(i-1)%26;s=String.fromCharCode(65+m)+s;i=Math.floor((i-1)/26);}return s;};
+const xe=s=>String(s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const cS=(r,c,t,st)=>'<c r="'+colL(c)+r+'"'+(st?' s="'+st+'"':'')+' t="inlineStr"><is><t xml:space="preserve">'+xe(t)+'</t></is></c>';
+const cN=(r,c,v,st)=>'<c r="'+colL(c)+r+'"'+(st?' s="'+st+'"':'')+'><v>'+v+'</v></c>';
+const serial=s=>{const p=s.split('-');return Math.round((Date.UTC(+p[0],+p[1]-1,+p[2])-Date.UTC(1899,11,30))/86400000);};
+function shXml(o){
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"'+(o.sel?' tabSelected="1"':'')+'>'+(o.freeze?'<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft"/>':'')+'</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>'+o.widths.map((w,i)=>'<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+w+'" customWidth="1"/>').join('')+'</cols><sheetData>'+o.rows.join('')+'</sheetData>'+(o.af||'')+(o.dv||'')+'<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/></worksheet>';
+}
+const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?(0xEDB88320^(c>>>1)):(c>>>1);t[n]=c>>>0;}return t;})();
+function crc32(u8){let c=0xFFFFFFFF;for(let i=0;i<u8.length;i++)c=CRC_T[(c^u8[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;}
+function zipStore(files){
+  const enc=new TextEncoder(),parts=[],cd=[];let off=0;
+  const u16=v=>[v&255,(v>>8)&255],u32=v=>[v&255,(v>>8)&255,(v>>16)&255,(v>>>24)&255];
+  files.forEach(f=>{
+    const nm=enc.encode(f.name),data=enc.encode(f.text),crc=crc32(data),sz=data.length;
+    const lh=new Uint8Array([0x50,0x4b,3,4].concat(u16(20),u16(0x0800),u16(0),u16(0),u16(0x21),u32(crc),u32(sz),u32(sz),u16(nm.length),u16(0)));
+    parts.push(lh,nm,data);
+    cd.push(new Uint8Array([0x50,0x4b,1,2].concat(u16(20),u16(20),u16(0x0800),u16(0),u16(0),u16(0x21),u32(crc),u32(sz),u32(sz),u16(nm.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(off))),nm);
+    off+=lh.length+nm.length+data.length;
+  });
+  let cdSize=0;cd.forEach(p=>cdSize+=p.length);
+  const eocd=new Uint8Array([0x50,0x4b,5,6].concat(u16(0),u16(0),u16(files.length),u16(files.length),u32(cdSize),u32(off),u16(0)));
+  const all=parts.concat(cd,[eocd]);let total=0;all.forEach(p=>total+=p.length);
+  const out=new Uint8Array(total);let o=0;all.forEach(p=>{out.set(p,o);o+=p.length;});return out;
+}
+const XNS='http://schemas.openxmlformats.org/spreadsheetml/2006/main',XH='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+const XSTYLES=XH+'<styleSheet xmlns="'+XNS+'"><numFmts count="1"><numFmt numFmtId="164" formatCode="dd/mm/yyyy"/></numFmts><fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF17636D"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF2C14E"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment vertical="top"/></xf><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+function xlsxBuild(list,withId){
+  const cols=[];
+  if(withId)cols.push({id:1,l:'ID',w:10});
+  XC.forEach(c=>cols.push(c));
+  if(withId)cols.push({seg:1,l:'Seguimiento (solo lectura)',w:56});
+  const evs=db.evaluaciones.slice().sort((a,b)=>b.fecha.localeCompare(a.fecha));
+  const rows=['<row r="1" ht="38" customHeight="1">'+cols.map((c,i)=>cS(1,i,c.l+(c.req?' *':''),c.req?2:1)).join('')+'</row>'];
+  list.forEach((m,ri)=>{
+    const r=ri+2;let cells='';
+    cols.forEach((c,i)=>{
+      if(c.id){cells+=cS(r,i,m.id,0);return;}
+      if(c.seg){const t=(m.hist||[]).map(h=>fmt(h.f)+(h.u?' ('+h.u+')':'')+': '+h.t).join('\n');if(t)cells+=cS(r,i,t,4);return;}
+      let v=m[c.k];
+      if(c.k==='evaluacion')v=evLabel(ev(m.evaluacion));
+      else if(c.k==='tipo')v=TM[m.tipo]||'';
+      else if(c.k==='nivel')v=NV[m.nivel]||'';
+      else if(c.k==='prioridad')v=PRIO[m.prioridad]?PRIO[m.prioridad].l:'';
+      else if(c.k==='estado')v=EL[m.estado]||'';
+      if(v===undefined||v===null||v==='')return;
+      if(c.num){const n=num(v);if(n!==null&&!isNaN(n))cells+=cN(r,i,n,0);}
+      else if(c.date){cells+=cN(r,i,serial(v),3);}
+      else cells+=cS(r,i,v,4);
+    });
+    rows.push('<row r="'+r+'">'+cells+'</row>');
+  });
+  const last=Math.max(1000,list.length+500),dvs=[];
+  cols.forEach((c,i)=>{
+    let f=null;
+    if(c.list)f='Listas!$'+XL[c.list].col+'$2:$'+XL[c.list].col+'$'+(XL[c.list].v.length+1);
+    else if(c.k==='evaluacion'&&evs.length)f='Evaluaciones!$A$2:$A$'+(evs.length+1);
+    if(f)dvs.push('<dataValidation type="list" allowBlank="1" showErrorMessage="1" errorTitle="Valor no válido" error="Elige un valor de la lista desplegable." sqref="'+colL(i)+'2:'+colL(i)+last+'"><formula1>'+f+'</formula1></dataValidation>');
+  });
+  const s1=shXml({sel:1,freeze:1,widths:cols.map(c=>c.w),rows,af:'<autoFilter ref="A1:'+colL(cols.length-1)+Math.max(1,list.length+1)+'"/>',dv:dvs.length?'<dataValidations count="'+dvs.length+'">'+dvs.join('')+'</dataValidations>':''});
+  const s2=shXml({widths:[120],rows:XINSTR.map((l,i)=>'<row r="'+(i+1)+'">'+cS(i+1,0,l[1],l[0]==='t'?5:4)+'</row>')});
+  const names=['tipo','nivel','prio','estado'],mx=Math.max.apply(null,names.map(n=>XL[n].v.length));
+  const lrows=['<row r="1">'+names.map((n,i)=>cS(1,i,XLH[n],1)).join('')+'</row>'];
+  for(let r=0;r<mx;r++)lrows.push('<row r="'+(r+2)+'">'+names.map((n,i)=>XL[n].v[r]?cS(r+2,i,XL[n].v[r][1],0):'').join('')+'</row>');
+  const s3=shXml({freeze:1,widths:[44,34,14,26],rows:lrows});
+  const erows=['<row r="1">'+['Evaluación (usa este texto)','Tipo','Fecha','Método'].map((t,i)=>cS(1,i,t,1)).join('')+'</row>'];
+  if(!evs.length)erows.push('<row r="2">'+cS(2,0,'Todavía no hay evaluaciones registradas en la aplicación.',0)+'</row>');
+  evs.forEach((e,i)=>erows.push('<row r="'+(i+2)+'">'+cS(i+2,0,evLabel(e),0)+cS(i+2,1,e.tipo,0)+(e.fecha?cN(i+2,2,serial(e.fecha),3):'')+(e.metodo?cS(i+2,3,e.metodo,0):'')+'</row>'));
+  const s4=shXml({freeze:1,widths:[60,30,14,34],rows:erows});
+  const REL='http://schemas.openxmlformats.org/officeDocument/2006/relationships',WS='application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml';
+  return zipStore([
+    {name:'[Content_Types].xml',text:XH+'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+[1,2,3,4].map(n=>'<Override PartName="/xl/worksheets/sheet'+n+'.xml" ContentType="'+WS+'"/>').join('')+'<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'},
+    {name:'_rels/.rels',text:XH+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="'+REL+'/officeDocument" Target="xl/workbook.xml"/></Relationships>'},
+    {name:'xl/workbook.xml',text:XH+'<workbook xmlns="'+XNS+'" xmlns:r="'+REL+'"><sheets><sheet name="Medidas" sheetId="1" r:id="rId1"/><sheet name="Instrucciones" sheetId="2" r:id="rId2"/><sheet name="Listas" sheetId="3" r:id="rId3"/><sheet name="Evaluaciones" sheetId="4" r:id="rId4"/></sheets></workbook>'},
+    {name:'xl/_rels/workbook.xml.rels',text:XH+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+[1,2,3,4].map(n=>'<Relationship Id="rId'+n+'" Type="'+REL+'/worksheet" Target="worksheets/sheet'+n+'.xml"/>').join('')+'<Relationship Id="rId5" Type="'+REL+'/styles" Target="styles.xml"/></Relationships>'},
+    {name:'xl/styles.xml',text:XSTYLES},
+    {name:'xl/worksheets/sheet1.xml',text:s1},{name:'xl/worksheets/sheet2.xml',text:s2},{name:'xl/worksheets/sheet3.xml',text:s3},{name:'xl/worksheets/sheet4.xml',text:s4}
+  ]);
+}
+/* --- Lectura de .xlsx (zip + XML), sin librerías --- */
+async function unzip(buf){
+  const u=new Uint8Array(buf),dv=new DataView(buf);let e=-1;
+  for(let i=u.length-22;i>=Math.max(0,u.length-65557);i--){if(dv.getUint32(i,true)===0x06054b50){e=i;break;}}
+  if(e<0)throw new Error('no es un archivo .xlsx válido (guárdalo desde Excel como «Libro de Excel (.xlsx)»)');
+  const n=dv.getUint16(e+10,true);let p=dv.getUint32(e+16,true);const ent={};
+  for(let i=0;i<n;i++){
+    if(dv.getUint32(p,true)!==0x02014b50)throw new Error('el archivo está dañado');
+    const nl=dv.getUint16(p+28,true),el=dv.getUint16(p+30,true),cl=dv.getUint16(p+32,true);
+    const name=new TextDecoder().decode(u.subarray(p+46,p+46+nl)).replace(/\\/g,'/');
+    ent[name]={m:dv.getUint16(p+10,true),cs:dv.getUint32(p+20,true),lo:dv.getUint32(p+42,true)};
+    p+=46+nl+el+cl;
+  }
+  const read=async name=>{
+    const f=ent[name];if(!f)return null;
+    const s=f.lo+30+dv.getUint16(f.lo+26,true)+dv.getUint16(f.lo+28,true),raw=u.subarray(s,s+f.cs);
+    if(f.m===0)return new TextDecoder().decode(raw);
+    if(f.m!==8)throw new Error('formato de compresión no admitido');
+    if(typeof DecompressionStream==='undefined')throw new Error('este navegador no puede leer .xlsx; usa Edge o Chrome actualizados');
+    const ab=await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer();
+    return new TextDecoder().decode(ab);
+  };
+  return {ent,read};
+}
+const xmlDoc=s=>{const d=new DOMParser().parseFromString(s,'application/xml');if(d.getElementsByTagName('parsererror').length)throw new Error('el archivo está dañado');return d;};
+const xText=el=>{let t='';const ts=el.getElementsByTagName('t');for(let i=0;i<ts.length;i++){if(ts[i].parentNode.nodeName!=='rPh')t+=ts[i].textContent;}return t;};
+async function readXlsx(buf){
+  const z=await unzip(buf);
+  const wbT=await z.read('xl/workbook.xml'),relT=await z.read('xl/_rels/workbook.xml.rels');
+  if(!wbT||!relT)throw new Error('no es un archivo .xlsx válido');
+  const wb=xmlDoc(wbT),rel=xmlDoc(relT);
+  const shs=[].slice.call(wb.getElementsByTagName('sheet')).map(s=>({name:s.getAttribute('name'),rid:s.getAttribute('r:id')}));
+  if(!shs.length)throw new Error('el libro no tiene hojas');
+  const sh=shs.find(s=>norm(s.name)==='medidas')||shs[0];
+  const rl=[].slice.call(rel.getElementsByTagName('Relationship')).find(r=>r.getAttribute('Id')===sh.rid);
+  if(!rl)throw new Error('no se encuentra la hoja de datos');
+  let tg=rl.getAttribute('Target');tg=tg.charAt(0)==='/'?tg.slice(1):'xl/'+tg;
+  const ssT=await z.read('xl/sharedStrings.xml'),ss=[];
+  if(ssT){const sd=xmlDoc(ssT);[].slice.call(sd.getElementsByTagName('si')).forEach(si=>ss.push(xText(si)));}
+  const shT=await z.read(tg);if(!shT)throw new Error('no se puede leer la hoja «'+sh.name+'»');
+  const sd=xmlDoc(shT),out=[];
+  [].slice.call(sd.getElementsByTagName('row')).forEach((rw,ri)=>{
+    const rn=+rw.getAttribute('r')||(ri+1),c=[];
+    [].slice.call(rw.getElementsByTagName('c')).forEach(ce=>{
+      const ref=ce.getAttribute('r')||'',m=ref.match(/^([A-Z]+)/);if(!m)return;
+      let ci=0;for(let k=0;k<m[1].length;k++)ci=ci*26+(m[1].charCodeAt(k)-64);ci--;
+      const t=ce.getAttribute('t'),ve=ce.getElementsByTagName('v')[0],isE=ce.getElementsByTagName('is')[0];
+      let v;
+      if(t==='s'){v=ve?ss[+ve.textContent]:undefined;}
+      else if(t==='inlineStr'){v=isE?xText(isE):undefined;}
+      else if(t==='str'){v=ve?ve.textContent:undefined;}
+      else if(t==='b'){v=ve?(ve.textContent==='1'?'Sí':'No'):undefined;}
+      else if(t==='e'){v=undefined;}
+      else{v=ve&&ve.textContent!==''?parseFloat(ve.textContent):undefined;}
+      if(v!==undefined)c[ci]=v;
+    });
+    out.push({r:rn,c});
+  });
+  return out;
+}
+function xDate(v){
+  let y,m,d;
+  if(typeof v==='number'){if(!(v>=1&&v<80000))return null;const t=new Date(Date.UTC(1899,11,30)+Math.floor(v)*86400000);y=t.getUTCFullYear();m=t.getUTCMonth()+1;d=t.getUTCDate();}
+  else{const s=String(v).trim();let a=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+    if(a){d=+a[1];m=+a[2];y=+a[3];}else{a=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);if(!a)return null;y=+a[1];m=+a[2];d=+a[3];}}
+  if(y<1990||y>2100)return null;
+  const t=new Date(Date.UTC(y,m-1,d));
+  if(t.getUTCFullYear()!==y||t.getUTCMonth()!==m-1||t.getUTCDate()!==d)return null;
+  return y+'-'+pad(m)+'-'+pad(d);
+}
+function xlsxAnalyze(rows){
+  const hmap={};
+  XC.forEach(c=>{[norm(c.l)].concat((c.al||[]).map(norm)).forEach(a=>{hmap[a]=c.k;});});
+  let hi=-1,colOf={};
+  for(let i=0;i<Math.min(rows.length,10)&&hi<0;i++){
+    const m={};let n=0;
+    rows[i].c.forEach((v,j)=>{const k=hmap[norm(v)];if(k&&m[k]===undefined){m[k]=j;n++;}});
+    if(n>=3&&m.medida!==undefined){hi=i;colOf=m;}
+  }
+  if(hi<0)return {fatal:'No encuentro la fila de cabeceras. Usa la plantilla de la aplicación (botón «Descargar plantilla») y no cambies los nombres de las columnas.'};
+  const miss=XC.filter(c=>c.req&&colOf[c.k]===undefined).map(c=>c.l);
+  if(miss.length)return {fatal:'Faltan columnas obligatorias: '+miss.join(', ')+'.'};
+  const lk={};
+  db.evaluaciones.forEach(e=>{[evLabel(e),e.codigo,e.ambito].forEach(s=>{const n=norm(s);if(!n)return;(lk[n]=lk[n]||new Set()).add(e.id);});});
+  const lm={};
+  Object.keys(XL).forEach(n=>{const m={};XL[n].v.forEach(p=>{m[norm(p[0])]=p[0];m[norm(p[1])]=p[0];});lm[n]=m;});
+  lm.nivel.sinclasificar='sin';
+  const ex={};
+  db.medidas.forEach(m=>{ex[m.evaluacion+'|'+norm(m.riesgo)+'|'+norm(m.medida)]=m.id;});
+  const ok=[],bad=[],seen={};
+  rows.slice(hi+1).forEach(row=>{
+    if(!row.c.some(v=>v!==undefined&&String(v).trim()!==''))return;
+    const get=k=>{const j=colOf[k];return j===undefined?undefined:row.c[j];};
+    const T=k=>{const v=get(k);return v===undefined||v===null?'':String(v).trim();};
+    const er=[],d={};
+    const et=T('evaluacion');
+    if(!et)er.push('Falta la evaluación.');
+    else{const s=lk[norm(et)];
+      if(!s)er.push('La evaluación «'+trunc(et,40)+'» no existe en la aplicación.');
+      else if(s.size>1)er.push('La evaluación «'+trunc(et,40)+'» es ambigua: coincide con varias.');
+      else d.evaluacion=[...s][0];}
+    d.riesgo=T('riesgo');d.medida=T('medida');
+    if(!d.riesgo)er.push('Falta el peligro o riesgo.');
+    if(!d.medida)er.push('Falta la medida preventiva.');
+    const L=(k,name,label,def,reqd)=>{const t=T(k);if(!t){if(reqd)er.push('Falta «'+label+'».');return def;}const v=lm[name][norm(t)];if(!v){er.push('«'+label+'»: valor no válido («'+trunc(t,30)+'»).');return def;}return v;};
+    d.tipo=L('tipo','tipo','Tipo de medida','otra');
+    d.nivel=L('nivel','nivel','Nivel de riesgo','sin');
+    d.prioridad=L('prioridad','prio','Prioridad','media',true);
+    d.estado=L('estado','estado','Estado','pendiente');
+    const N=(k,label)=>{const v=get(k);if(v===undefined||v===null||String(v).trim()==='')return '';const n=typeof v==='number'?v:num(String(v));if(n===null||isNaN(n)||n<0){er.push('«'+label+'»: debe ser un número igual o mayor que 0.');return '';}return String(n);};
+    d.expuestos=N('expuestos','Trabajadores expuestos');d.coste=N('coste','Recursos económicos');
+    const D=(k,label)=>{const v=get(k);if(v===undefined||v===null||String(v).trim()==='')return '';const r=xDate(v);if(r===null){er.push('«'+label+'»: fecha no válida (usa dd/mm/aaaa).');return '';}return r;};
+    d.inicio=D('inicio','Fecha de comienzo');d.fin=D('fin','Fecha prevista de finalización');d.ejecucion=D('ejecucion','Fecha de implantación');d.verifFecha=D('verifFecha','Fecha de verificación');
+    d.responsable=T('responsable');d.recursos=T('recursos');d.evidencia=T('evidencia');d.verifNota=T('verifNota');d.motivo=T('motivo');
+    if(d.inicio&&d.fin&&d.fin<d.inicio)er.push('La fecha de finalización es anterior a la de comienzo.');
+    if((d.estado==='implantada'||d.estado==='verificada')&&!d.ejecucion)er.push('Estado «'+EL[d.estado]+'»: falta la fecha de implantación.');
+    if(d.estado==='verificada'){if(!d.verifFecha)er.push('Estado «Verificada»: falta la fecha de verificación.');if(!d.evidencia)er.push('Estado «Verificada»: falta la evidencia.');}
+    if((d.estado==='aplazada'||d.estado==='cancelada')&&!d.motivo)er.push('Estado «'+EL[d.estado]+'»: falta el motivo.');
+    if(d.estado!=='implantada'&&d.estado!=='verificada')d.ejecucion='';
+    if(d.estado!=='verificada'){d.verifFecha='';d.verifNota='';}
+    if(d.estado!=='aplazada'&&d.estado!=='cancelada')d.motivo='';
+    if(d.evaluacion&&d.riesgo&&d.medida){
+      const key=d.evaluacion+'|'+norm(d.riesgo)+'|'+norm(d.medida);
+      if(ex[key])er.push('Ya existe la medida '+ex[key]+' con el mismo riesgo y la misma medida.');
+      else if(seen[key])er.push('Repetida: es igual que la fila '+seen[key]+' de este archivo.');
+      else seen[key]=row.r;
+    }
+    if(er.length)bad.push({r:row.r,er});else ok.push(d);
+  });
+  return {ok,bad};
+}
+async function xlsxCommit(ok){
+  const n0=await nextId('m',ok.length),ops=ok.map((d,i)=>{const id=midFmt(n0+i);return [fs.collection(COL.m).doc(id),Object.assign({},d,{id,rev:1,hist:[{f:today(),t:'Importada desde Excel',u:who()}]})];});
+  for(let i=0;i<ops.length;i+=400){const b=fs.batch();ops.slice(i,i+400).forEach(o=>b.set(o[0],o[1]));await b.commit();}
+}
+function xlsxImportFile(file){
+  if(!/\.xlsx$/i.test(file.name)){modal({title:'Formato no admitido',body:'<p>Solo se pueden importar archivos <b>.xlsx</b>. Si tu archivo es .xls o .csv, ábrelo en Excel y guárdalo como «Libro de Excel (.xlsx)».</p>',actions:[{label:'Cerrar',kind:'primary'}]});return;}
+  file.arrayBuffer().then(readXlsx).then(rows=>{
+    const a=xlsxAnalyze(rows);
+    if(a.fatal){modal({title:'No se puede importar',body:'<p>'+esc(a.fatal)+'</p>',actions:[{label:'Cerrar',kind:'primary'}]});return;}
+    const total=a.ok.length+a.bad.length;
+    if(!total){modal({title:'Archivo vacío',body:'<p>No hay filas con datos debajo de las cabeceras.</p>',actions:[{label:'Cerrar',kind:'primary'}]});return;}
+    const list=a.bad.slice(0,40).map(b=>'<tr><td style="white-space:nowrap"><b>Fila '+b.r+'</b></td><td>'+b.er.map(esc).join('<br>')+'</td></tr>').join('');
+    const body='<p style="margin-top:0"><b>'+a.ok.length+'</b> '+(a.ok.length===1?'fila lista':'filas listas')+' para importar'+(a.bad.length?' y <b style="color:var(--danger)">'+a.bad.length+'</b> con problemas, que <b>no se importarán</b>':'')+'.</p>'+
+      (a.bad.length?'<div class="tw"><table><thead><tr><th>Fila</th><th>Problema</th></tr></thead><tbody>'+list+'</tbody></table></div>'+(a.bad.length>40?'<p class="small muted">Se muestran los 40 primeros problemas de '+a.bad.length+'.</p>':'')+'<p class="small muted">Corrige el Excel y vuelve a importarlo: las filas ya importadas se detectarán como existentes y no se duplicarán.</p>':'')+
+      '<div class="err" id="xi_err" role="alert"></div>';
+    modal({title:'Importar medidas desde Excel',wide:true,body,actions:[{label:'Cancelar',kind:'ghost'}].concat(a.ok.length?[{label:'Importar '+a.ok.length+(a.ok.length===1?' medida':' medidas'),kind:'primary',fn:()=>{
+      $('#xi_err').textContent='Importando…';
+      xlsxCommit(a.ok).then(()=>{closeModal();toast(a.ok.length+(a.ok.length===1?' medida importada':' medidas importadas'));}).catch(x=>{$('#xi_err').textContent='No se pudo importar: '+friendly(x);});
+      return false;}}]:[])});
+  }).catch(x=>modal({title:'No se pudo leer el archivo',body:'<p>'+esc('Motivo: '+(x&&x.message?x.message:x))+'</p>',actions:[{label:'Cerrar',kind:'primary'}]}));
+}
+const xReady=()=>{if(user&&loaded.e&&loaded.m)return true;toast('Espera a que se carguen los datos');return false;};
 
 /* ============ Acceso ============ */
 function userBox(){
